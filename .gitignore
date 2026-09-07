@@ -1,0 +1,24 @@
+# OCaml / dune
+_build/
+*.install
+.merlin
+*.cmi
+*.cmo
+*.cmx
+*.o
+*.a
+*.byte
+*.native
+
+# Large / regenerable input (fetch with: dune exec bin/main.exe -- fetch)
+/data/
+*.mm
+# but DO ship the generated viz data so the visualization works on clone
+!visualization/data/data.json
+
+# Paper + figures (not ours to redistribute)
+resources/
+
+# OS
+.DS_Store
+Thumbs.db

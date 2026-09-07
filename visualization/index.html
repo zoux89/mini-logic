@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mini-math · grammar-compressed proof structures</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>mini-math</h1>
+      <span class="sub">grammar-compressed Metamath proof structures</span>
+      <span id="meta" class="meta"></span>
+    </header>
+
+    <div id="controls">
+      <label>Grammar:
+        <select id="dataset">
+          <option value="human">Human (set.mm)</option>
+          <option value="machine">Machine (TreeRePair)</option>
+        </select>
+      </label>
+      <label>Theorem:
+        <select id="root"></select>
+      </label>
+      <label>Search:
+        <input id="search" list="names" placeholder="theorem name… (Enter)" autocomplete="off" />
+        <datalist id="names"></datalist>
+      </label>
+      <label class="chk"><input type="checkbox" id="showstmt" checked /> Metamath statements</label>
+      <div class="tabs">
+        <button data-view="trie" class="active">Trie</button>
+        <button data-view="tree">Proof Tree</button>
+        <button data-view="dag">Proof DAG</button>
+        <button data-view="net">Network</button>
+        <button data-view="deg">In-degree</button>
+      </div>
+    </div>
+
+    <main>
+      <div id="tree"></div>
+      <div id="cy" style="display:none"></div>
+      <canvas id="deg" width="700" height="520" style="display:none"></canvas>
+      <aside id="panel">
+        <div class="empty">Click a node to see its Metamath statement.</div>
+      </aside>
+    </main>
+
+    <div id="legend">
+      <span class="dot axiom"></span> axiom
+      <span class="dot thm"></span> theorem
+      <span class="dot lemma"></span> machine lemma
+      <span class="dot param"></span> hypothesis (V<sub>i</sub>)
+      <span class="sep">·</span>
+      <span class="v-setvar">setvar</span>
+      <span class="v-wff">wff</span>
+      <span class="v-class">class</span>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
