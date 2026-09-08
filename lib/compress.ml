@@ -7,20 +7,15 @@
      production. This is the weakest compression; it already brings the
      gigantic tree sizes down (O11).
 
-   - [treerepair]: TreeRePair (Sect. 5, line 177; the Sect. 6 variant that
-     compresses the forest of a grammar's RHSs without ever expanding to ground
-     trees). It repeatedly folds the most frequent digram
+   - [treerepair]: TreeRePair, in the Sect. 6 variant that compresses the
+     forest of a grammar's RHSs without ever expanding to ground trees. It
+     repeatedly folds the most frequent digram
 
          f(V_1,..,V_{i-1}, g(V_i,..,V_{i+m-1}), V_{i+m},..,V_{n-1+m})
 
      into a fresh parametrised production, then prunes productions whose
      save-value is <= 0 (the pruning phase). Compressing the human grammar this
-     way is exactly how the paper discovers new shared lemmas (Sect. 6, App. B).
-
-   [save_value] implements sav_G(p) for a linear production (line 151):
-       ref_G(p) * (|d| - arity(p)) - |d|. *)
-
-let save_value = Grammar.save_value
+     way is how the paper discovers new shared lemmas (Sect. 6, App. B). *)
 
 (* ----------------------------------------------------------------- *)
 (* minimal DAG compression                                            *)
@@ -185,7 +180,6 @@ let treerepair ?(protect = fun _ -> false) (g : Grammar.t) : Grammar.t =
       let before = Array.init i (fun _ -> mkparam ()) in
       let gch = Array.init gm (fun _ -> mkparam ()) in
       let after = Array.init (pn - i - 1) (fun _ -> mkparam ()) in
-      ignore pf; ignore gname;
       let rhs =
         { sym = MApp pf;
           ch = Array.concat [ before; [| { sym = MApp gname; ch = gch } |]; after ] }

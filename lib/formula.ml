@@ -93,6 +93,36 @@ let alpha_eq_clause (c1 : clause) (c2 : clause) : bool =
     go c1.head c2.head && List.for_all2 go c1.body c2.body
   end
 
+(* ----- instance relation (the paper's F >=. F') ----- *)
+
+(* [instance_of f g] holds iff there is a substitution s with (g)s = f, i.e.
+   f is an instance of g (heads and body literals matched positionally). Only
+   variables of [g] are bound; variables of [f] are rigid. *)
+let instance_of (f : clause) (g : clause) : bool =
+  if List.length f.body <> List.length g.body then false
+  else begin
+    let m : (int, fterm) Hashtbl.t = Hashtbl.create 16 in
+    let rec go (fa : fterm) (ga : fterm) =
+      match ga with
+      | Var i -> (
+        match Hashtbl.find_opt m i with
+        | Some bound -> bound = fa
+        | None -> Hashtbl.replace m i fa; true)
+      | App (gf, gargs) -> (
+        match fa with
+        | App (ff, fargs) ->
+          String.equal ff gf
+          && List.length fargs = List.length gargs
+          && List.for_all2 go fargs gargs
+        | Var _ -> false)
+    in
+    go f.head g.head && List.for_all2 go f.body g.body
+  end
+
+(* f is a strict instance of g: an instance but not a variant. *)
+let strict_instance_of (f : clause) (g : clause) : bool =
+  instance_of f g && not (instance_of g f)
+
 (* ----- convenience constructors / pretty printing ----- *)
 
 let imp a b = App ("->", [ a; b ])

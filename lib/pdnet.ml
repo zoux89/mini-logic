@@ -43,22 +43,3 @@ let in_degrees (net : t) : (string * int) list =
       Hashtbl.replace h q (c + (try Hashtbl.find h q with Not_found -> 0)))
     net.edges;
   Hashtbl.fold (fun k v acc -> (k, v) :: acc) h []
-
-(* Complementary cumulative distribution of in-degrees, for the log-log
-   power-law plot (Fig. 1, O15): list of (k, P(X >= k)). *)
-let ccdf (net : t) : (int * float) list =
-  let degs = List.map snd (in_degrees net) in
-  let n = List.length degs in
-  if n = 0 then []
-  else begin
-    let maxd = List.fold_left max 0 degs in
-    let counts = Array.make (maxd + 1) 0 in
-    List.iter (fun d -> counts.(d) <- counts.(d) + 1) degs;
-    let acc = ref 0 in
-    let res = ref [] in
-    for k = maxd downto 0 do
-      acc := !acc + counts.(k);
-      res := (k, float_of_int !acc /. float_of_int n) :: !res
-    done;
-    !res
-  end

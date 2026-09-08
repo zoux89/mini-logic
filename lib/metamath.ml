@@ -5,10 +5,7 @@
    every logical (|- ) step becomes a function symbol applied to the proof terms
    of its essential hypotheses. Axioms ($a with |- ) become terminals
    (presupposition names); theorems ($p) become productions of the proof
-   grammar, with arity = number of essential mandatory hypotheses.
-
-   This is the source-agnostic [Backend] for the engine; the compression and
-   visualization never look at Metamath again. *)
+   grammar, with arity = number of essential mandatory hypotheses. *)
 
 (* ---------- streaming tokenizer (comments / includes stripped) ---------- *)
 
@@ -59,9 +56,6 @@ type hyp = { hl : string; hk : hkind; hvar : string option; hsyms : string list 
 type asrt = {
   tc : string;
   mand : (string * bool) list; (* (label, is_essential) in mandatory order *)
-  stmt : string;               (* conclusion symbols, space-joined *)
-  ess : string list;           (* essential-hypothesis statements, in order *)
-  isp : bool;                  (* true if $p, false if $a *)
 }
 
 type entry = Hyp of hyp | Asrt of asrt
@@ -71,25 +65,20 @@ type theorem = {
   is_axiom : bool;  (* $a with |- typecode -> terminal/presupposition *)
   arity : int;
   proof : Term.t option;
-  statement : string;
-  ess : string list;
-  typecode : string;
 }
 
 type db = {
   order : string list;
   table : (string, theorem) Hashtbl.t;
-  vartypes : (string, string) Hashtbl.t; (* variable token -> typecode (wff/setvar/class) *)
 }
 
-(* ---------- compressed / normal proof decoding ---------- *)
+(* ---------- compressed proof decoding ---------- *)
 
+(* Metamath compressed proof digits: A-T is the terminating base-20 digit,
+   U-Y are leading base-5 digits, Z saves the top of the stack. *)
 type action = ARef of int | ASave
 
-let decode_compressed (labels : string array) (m : int) (enc : string) :
-    action list =
-  (* labels: combined [mandatory hyps (m) ; parenthesised labels]. *)
-  ignore labels;
+let decode_compressed (enc : string) : action list =
   let acts = ref [] in
   let n = ref 0 in
   String.iter
@@ -102,9 +91,8 @@ let decode_compressed (labels : string array) (m : int) (enc : string) :
       else if ch >= 'U' && ch <= 'Y' then
         n := (!n * 5) + (Char.code ch - Char.code 'U') + 1
       else if ch = 'Z' then acts := ASave :: !acts
-      else () (* '?' or stray: leave; caller may fail to build *))
+      else () (* '?' (incomplete proof) or stray: the build will fail *))
     enc;
-  ignore m;
   List.rev !acts
 
 (* ---------- extraction ---------- *)
@@ -129,7 +117,6 @@ let parse ?(max_theorems = max_int) (text : string) : db =
   let marks : int list ref = ref [] in
   let order = ref [] in
   let table : (string, theorem) Hashtbl.t = Hashtbl.create 4096 in
-  let vartypes : (string, string) Hashtbl.t = Hashtbl.create 256 in
   let nthm = ref 0 in
 
   let is_var t = Hashtbl.mem vars t in
@@ -162,7 +149,9 @@ let parse ?(max_theorems = max_int) (text : string) : db =
     let paren_arr = Array.of_list paren in
     let k = Array.length paren_arr in
     let combined = Array.append mand_labels paren_arr in
-    let saved : pentry list ref = ref [] in
+    (* Z-saved stack entries, indexed 1.. in order of saving *)
+    let saved : (int, pentry) Hashtbl.t = Hashtbl.create 64 in
+    let nsaved = ref 0 in
     let stack : pentry list ref = ref [] in
     let push e = stack := e :: !stack in
     let process_label (l : string) : unit =
@@ -198,8 +187,7 @@ let parse ?(max_theorems = max_int) (text : string) : db =
     let do_ref num =
       if num >= 1 && num <= m + k then process_label combined.(num - 1)
       else begin
-        let s = num - m - k in (* 1-based into saved *)
-        match List.nth_opt !saved (s - 1) with
+        match Hashtbl.find_opt saved (num - m - k) with
         | Some e -> push e
         | None -> raise Extract_fail
       end
@@ -210,8 +198,11 @@ let parse ?(max_theorems = max_int) (text : string) : db =
          List.iter
            (function
              | ARef num -> do_ref num
-             | ASave -> ( match !stack with e :: _ -> saved := !saved @ [ e ] | [] -> raise Extract_fail))
-           (decode_compressed combined m enc)
+             | ASave -> (
+               match !stack with
+               | e :: _ -> incr nsaved; Hashtbl.replace saved !nsaved e
+               | [] -> raise Extract_fail))
+           (decode_compressed enc)
        | `Normal labels -> List.iter process_label labels);
       match !stack with [ Pf t ] -> Some t | _ -> None
     with Extract_fail -> None
@@ -231,15 +222,13 @@ let parse ?(max_theorems = max_int) (text : string) : db =
       | Some "$c" -> let toks, _ = read_until c [ "$." ] in List.iter (fun t -> Hashtbl.replace consts t ()) toks; loop ()
       | Some "$v" -> let toks, _ = read_until c [ "$." ] in List.iter (fun t -> Hashtbl.replace vars t ()) toks; loop ()
       | Some "$d" -> let _ = read_until c [ "$." ] in loop ()
-      | Some "$(" -> loop () (* shouldn't happen, next strips comments *)
       | Some lbl ->
         (* a labelled statement: next token is the keyword *)
         (match next c with
          | Some "$f" ->
            let toks, _ = read_until c [ "$." ] in
            (match toks with
-            | tc :: var :: _ ->
-              Hashtbl.replace vartypes var tc;
+            | _ :: var :: _ ->
               let h = { hl = lbl; hk = HF; hvar = Some var; hsyms = [ var ] } in
               Hashtbl.replace reg lbl (Hyp h);
               active := !active @ [ h ]
@@ -248,8 +237,7 @@ let parse ?(max_theorems = max_int) (text : string) : db =
          | Some "$e" ->
            let toks, _ = read_until c [ "$." ] in
            (match toks with
-            | tc :: syms ->
-              ignore tc;
+            | _ :: syms ->
               let h = { hl = lbl; hk = HE; hvar = None; hsyms = syms } in
               Hashtbl.replace reg lbl (Hyp h);
               active := !active @ [ h ]
@@ -259,16 +247,14 @@ let parse ?(max_theorems = max_int) (text : string) : db =
            let toks, _ = read_until c [ "$." ] in
            (match toks with
             | tc :: syms ->
-              let mand, hyps = mandatory syms in
-              let ess = List.filter_map (fun h -> if h.hk = HE then Some (String.concat " " h.hsyms) else None) hyps in
-              let stmt = String.concat " " syms in
-              Hashtbl.replace reg lbl (Asrt { tc; mand; stmt; ess; isp = false });
+              let mand, _ = mandatory syms in
+              Hashtbl.replace reg lbl (Asrt { tc; mand });
               if String.equal tc "|-" then begin
                 order := lbl :: !order;
                 Hashtbl.replace table lbl
                   { label = lbl; is_axiom = true;
                     arity = List.length (List.filter snd mand);
-                    proof = None; statement = stmt; ess; typecode = tc }
+                    proof = None }
               end
             | _ -> ());
            loop ()
@@ -277,9 +263,7 @@ let parse ?(max_theorems = max_int) (text : string) : db =
            let proof_toks, _ = read_until c [ "$." ] in
            (match syms with
             | tc :: concl ->
-              let mand, hyps = mandatory concl in
-              let ess = List.filter_map (fun h -> if h.hk = HE then Some (String.concat " " h.hsyms) else None) hyps in
-              let stmt = String.concat " " concl in
+              let mand, _ = mandatory concl in
               (* decode proof: compressed "( labels ) ENC" or normal labels *)
               let proof =
                 match proof_toks with
@@ -295,13 +279,13 @@ let parse ?(max_theorems = max_int) (text : string) : db =
                 | labels -> extract_proof mand [] (`Normal labels)
               in
               (* register as assertion so later proofs can reference it *)
-              Hashtbl.replace reg lbl (Asrt { tc; mand; stmt; ess; isp = true });
+              Hashtbl.replace reg lbl (Asrt { tc; mand });
               if String.equal tc "|-" then begin
                 order := lbl :: !order;
                 Hashtbl.replace table lbl
                   { label = lbl; is_axiom = false;
                     arity = List.length (List.filter snd mand);
-                    proof; statement = stmt; ess; typecode = tc };
+                    proof };
                 incr nthm
               end
             | _ -> ());
@@ -313,7 +297,16 @@ let parse ?(max_theorems = max_int) (text : string) : db =
          | None -> ())
   in
   loop ();
-  { order = List.rev !order; table; vartypes }
+  { order = List.rev !order; table }
+
+(* Read and parse a Metamath database file. *)
+let load ?(max_theorems = max_int) (path : string) : db =
+  let ic = open_in_bin path in
+  let text =
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () -> really_input_string ic (in_channel_length ic))
+  in
+  parse ~max_theorems text
 
 (* Build the proof grammar: one production per $p theorem with a successfully
    extracted proof. Axioms ($a |- ) are terminals and do not get productions. *)

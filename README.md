@@ -161,27 +161,71 @@ flowchart TD
 
 ---
 
-## Build & run
+## How to run
+
+**0. Prerequisites** — OCaml + dune, and Python 3 (only to serve the viz).
 
 ```bash
-# toolchain (Fedora): sudo dnf install -y ocaml ocaml-dune
-dune build
-dune test                                   # validates paper Examples 3 & 6
-
-dune exec bin/main.exe -- fetch             # download set.mm (commit 8cf01a7)
-dune exec bin/main.exe -- export 2000       # parse + compress → visualization/data/data.json
-dune exec bin/main.exe -- verify 2000       # prove compression is lossless
+# Fedora
+sudo dnf install -y ocaml ocaml-dune
+# Debian/Ubuntu
+sudo apt install -y ocaml dune
+# macOS (Homebrew)
+brew install ocaml dune
 ```
 
-Tests pin the paper's worked examples, e.g. $|d| = 10$, $|G|_{\text{DAG}} = 8$, $|G|_{\text{TRP}} = 7$.
+**1. Build**
+
+```bash
+dune build
+```
+
+**2. (optional) Run the tests** — pins the paper's worked examples ($|d| = 10$, $|G|_{\text{DAG}} = 8$, $|G|_{\text{TRP}} = 7$).
+
+```bash
+dune test
+```
+
+**3. Get `set.mm`** — downloads the pinned commit `8cf01a7` into `data/set.mm` (~46 MB; git-ignored).
+
+```bash
+dune exec bin/main.exe -- fetch
+# or point at your own file later via the [path] arg
+```
+
+**4. Parse + compress** — writes `visualization/data/data.json` (already committed, so you can skip to step 6 to just look). The number is how many theorems to ingest.
+
+```bash
+dune exec bin/main.exe -- export 2000
+```
+
+**5. (optional) Prove it's lossless** — unfolds every machine lemma and checks it reproduces the original proofs exactly.
+
+```bash
+dune exec bin/main.exe -- verify 2000
+```
+
+**6. View the visualization** — serve the folder, then open the URL.
+
+```bash
+cd visualization
+python3 -m http.server 8765
+# now open http://localhost:8765 in a browser
+```
+
+### CLI summary
+
+| command | what it does |
+|---|---|
+| `dune exec bin/main.exe -- fetch [url] [path]` | download `set.mm` (defaults: pinned commit → `data/set.mm`) |
+| `dune exec bin/main.exe -- export [limit] [path]` | parse a fragment, compress, write `visualization/data/data.json` |
+| `dune exec bin/main.exe -- verify [limit] [path]` | prove the compression is lossless (unfold lemmas == original proofs) |
 
 ---
 
 ## Visualization
 
-```bash
-cd visualization && python3 -m http.server 8765   # open http://localhost:8765
-```
+After `export`, serve the `visualization/` folder (step 6 above) and open `http://localhost:8765`.
 
 | view | what |
 |---|---|

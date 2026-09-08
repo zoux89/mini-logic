@@ -74,11 +74,6 @@ let rec max_param (t : t) : int =
   | Param i -> i
   | App (_, args) -> Array.fold_left (fun acc c -> max acc (max_param c)) 0 args
 
-let name_of (t : t) : string option =
-  match t.node with App (n, _) -> Some n | Param _ -> None
-
-let args_of (t : t) : t array =
-  match t.node with App (_, a) -> a | Param _ -> [||]
 
 (* Pretty-print a proof term, e.g. "D(ax-1, V1)". *)
 let rec to_string (t : t) : string =
