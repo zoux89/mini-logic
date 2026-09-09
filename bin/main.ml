@@ -1,203 +1,166 @@
 open Mini_math
 
-(* set.mm pinned to the paper's commit (Sect. 1, line 23). raw.githubusercontent
-   serves a full file by commit SHA; override with: main fetch <url> <path>. *)
+(* set.mm pinned to the paper's commit (Sect. 1). Override with:
+   main fetch <url> <path>. *)
 let setmm_commit = "8cf01a7"
 let setmm_url =
   Printf.sprintf "https://raw.githubusercontent.com/metamath/set.mm/%s/set.mm"
     setmm_commit
 let default_path = "data/set.mm"
 
-let sh cmd = ignore (Sys.command cmd)
-
 let fetch url path =
-  sh "mkdir -p data";
+  let dir = Filename.dirname path in
+  if not (Sys.file_exists dir) then Sys.mkdir dir 0o755;
   Printf.printf "Downloading set.mm (commit %s) -> %s\n%!" setmm_commit path;
-  let code = Sys.command (Printf.sprintf "curl -fL -o %s %s" (Filename.quote path) (Filename.quote url)) in
-  if code <> 0 then (Printf.eprintf "curl failed (exit %d). Provide a URL/path manually.\n" code; exit 1)
-
-(* ---------- JSON encoding of a grammar + analysis ---------- *)
-
-let rec term_json (t : Term.t) : Json.t =
-  match t.Term.node with
-  | Term.Param i -> Json.Obj [ ("v", Json.Int i) ]
-  | Term.App (n, args) ->
-    Json.Obj
-      [ ("s", Json.Str n);
-        ("c", Json.List (Array.to_list (Array.map term_json args))) ]
-
-let names_of (g : Grammar.t) : (string, unit) Hashtbl.t =
-  let h = Hashtbl.create 512 in
-  List.iter
-    (fun p ->
-      Hashtbl.replace h p.Grammar.name ();
-      let rec go t =
-        match t.Term.node with
-        | Term.Param _ -> ()
-        | Term.App (n, args) -> Hashtbl.replace h n (); Array.iter go args
-      in
-      go p.Grammar.rhs)
-    g;
-  h
-
-let kind_of (bk : Backend.loaded) (name : string) : string =
-  if bk.Backend.is_axiom name then "axiom"
-  else match bk.Backend.statement name with Some _ -> "thm" | None -> "lemma"
-
-let statement_of (bk : Backend.loaded) (g : Grammar.t) (name : string) : string =
-  match bk.Backend.statement name with
-  | Some s -> s
-  | None -> (
-    match Grammar.find g name with
-    | Some p -> "= " ^ Term.to_string p.Grammar.rhs
-    | None -> "")
-
-let grammar_json (bk : Backend.loaded) (g : Grammar.t) : Json.t =
-  let names = names_of g in
-  let productions =
-    List.map
-      (fun p ->
-        ( p.Grammar.name,
-          Json.Obj [ ("arity", Json.Int p.Grammar.arity); ("rhs", term_json p.Grammar.rhs) ] ))
-      g
+  let code =
+    Sys.command
+      (Printf.sprintf "curl -fL -o %s %s" (Filename.quote path) (Filename.quote url))
   in
-  let info =
-    Hashtbl.fold
-      (fun name () acc ->
-        let sav = match Grammar.find g name with Some p -> Grammar.save_value g p | None -> 0 in
-        ( name,
-          Json.Obj
-            [ ("statement", Json.Str (statement_of bk g name));
-              ("ess", Json.List (List.map (fun s -> Json.Str s) (bk.Backend.essentials name)));
-              ("kind", Json.Str (kind_of bk name));
-              ("ref", Json.Int (Grammar.ref_count g name));
-              ("sav", Json.Int sav) ] )
-        :: acc)
-      names []
-  in
-  let roots =
-    List.filter_map
-      (fun p -> if Grammar.ref_count g p.Grammar.name = 0 then Some (Json.Str p.Grammar.name) else None)
-      g
-  in
-  let net = Pdnet.of_grammar g in
-  let pdnet =
-    Json.Obj
-      [ ("nodes", Json.List (List.map (fun n -> Json.Str n) net.Pdnet.nodes));
-        ( "edges",
-          Json.List
-            (List.map (fun (p, q, c) -> Json.List [ Json.Str p; Json.Str q; Json.Int c ]) net.Pdnet.edges) ) ]
-  in
-  let ccdf =
-    Json.List (List.map (fun (k, pr) -> Json.List [ Json.Int k; Json.Float pr ]) (Pdnet.ccdf net))
-  in
-  Json.Obj
-    [ ("size", Json.Int (Grammar.size g));
-      ("num", Json.Int (Grammar.num_productions g));
-      ("productions", Json.Obj productions);
-      ("info", Json.Obj info);
-      ("roots", Json.List roots);
-      ("pdnet", pdnet);
-      ("ccdf", ccdf) ]
+  if code <> 0 then begin
+    Printf.eprintf "curl failed (exit %d). Provide a URL/path manually.\n" code;
+    exit 1
+  end
 
-let load ~limit ~path : Backend.loaded =
-  if not (Sys.file_exists path) then (
-    Printf.eprintf "set.mm not found at %s. Run: main fetch\n" path; exit 1);
-  Backend.metamath.Backend.load ~limit ~path
+let load ~limit ~path : Grammar.t =
+  if not (Sys.file_exists path) then begin
+    Printf.eprintf "set.mm not found at %s. Run: main fetch\n" path;
+    exit 1
+  end;
+  Metamath.grammar_of_db (Metamath.load ~max_theorems:limit path)
 
-let run_export ~limit ~path =
+(* Human grammar -> machine grammar: TreeRePair over the RHS forest with the
+   original theorems protected from pruning (Sect. 6). Returns the machine
+   grammar and the sub-grammar of newly introduced lemmas. *)
+let compress (human : Grammar.t) : Grammar.t * Grammar.t =
+  let orig = Grammar.table human in
+  let protect n = Hashtbl.mem orig n in
+  let machine = Compress.treerepair ~protect human in
+  let lemmas = List.filter (fun p -> not (Hashtbl.mem orig p.Grammar.name)) machine in
+  (machine, lemmas)
+
+(* ---------- stats (a text rendering of the paper's Table 2 block) ---------- *)
+
+let pct part total =
+  if total = 0 then 0.0 else 100.0 *. float_of_int part /. float_of_int total
+
+let print_dist label (xs : int list) =
+  match xs with
+  | [] -> Printf.printf "  %-10s (none)\n" label
+  | _ ->
+    let a = Array.of_list xs in
+    Array.sort compare a;
+    let n = Array.length a in
+    let sum = Array.fold_left ( + ) 0 a in
+    let median =
+      if n mod 2 = 1 then float_of_int a.(n / 2)
+      else float_of_int (a.((n / 2) - 1) + a.(n / 2)) /. 2.0
+    in
+    Printf.printf "  %-10s min %d   median %.0f   mean %.1f   max %d   sum %d\n"
+      label a.(0) median (float_of_int sum /. float_of_int n) a.(n - 1) sum
+
+let run_stats ~limit ~path =
   Printf.printf "Loading %s (first %d theorems)...\n%!" path limit;
-  let bk = load ~limit ~path in
-  let human = bk.Backend.grammar in
-  Printf.printf "Human grammar:  |G| = %d, productions = %d\n%!"
-    (Grammar.size human) (Grammar.num_productions human);
-  let orig = Hashtbl.create 1024 in
-  List.iter (fun p -> Hashtbl.replace orig p.Grammar.name ()) human;
-  let protect n = Hashtbl.mem orig n in
-  Printf.printf "Compressing (TreeRePair, Sect. 6)...\n%!";
-  let machine = Compress.treerepair ~protect human in
-  let new_lemmas =
-    List.length (List.filter (fun p -> not (Hashtbl.mem orig p.Grammar.name)) machine)
+  let human = load ~limit ~path in
+  let n = Grammar.num_productions human in
+  Printf.printf "\nHuman grammar (set.mm)\n";
+  Printf.printf "  |G| = %d   N(G) = %d\n" (Grammar.size human) n;
+  let refs = List.map (fun p -> Grammar.ref_count human p.Grammar.name) human in
+  print_dist "ref_G(p)" refs;
+  Printf.printf "  %-10s ref=0: %.1f%%   ref=1: %.1f%%\n" ""
+    (pct (List.length (List.filter (( = ) 0) refs)) n)
+    (pct (List.length (List.filter (( = ) 1) refs)) n);
+  print_dist "|p|" (List.map Grammar.production_size human);
+  let savs =
+    List.filter_map
+      (fun p ->
+        if Grammar.ref_count human p.Grammar.name > 0 then
+          Some (Grammar.save_value human p)
+        else None)
+      human
   in
-  let reduction =
-    if Grammar.size human = 0 then 0.0
-    else
-      100.0 *. float_of_int (Grammar.size human - Grammar.size machine)
-      /. float_of_int (Grammar.size human)
+  print_dist "sav_G(p)" savs;
+  Printf.printf "  %-10s (over ref>0) sav<0: %.1f%%   sav=0: %.1f%%\n" ""
+    (pct (List.length (List.filter (fun s -> s < 0) savs)) (List.length savs))
+    (pct (List.length (List.filter (( = ) 0) savs)) (List.length savs));
+  let arities = List.map (fun p -> p.Grammar.arity) human in
+  print_dist "arity(p)" arities;
+  Printf.printf "  %-10s arity=0: %.1f%%\n" ""
+    (pct (List.length (List.filter (( = ) 0) arities)) n);
+  Printf.printf "  %-10s %.1f%% of productions are nonlinear\n" "nl_G"
+    (pct (List.length (List.filter (fun p -> not (Grammar.is_linear p)) human)) n);
+  Printf.printf "\nCompressing (TreeRePair over RHS forest, originals protected)...\n%!";
+  let machine, lemmas = compress human in
+  Printf.printf "Machine grammar\n";
+  Printf.printf "  |G| = %d   N(G) = %d   reduction %.1f%%   new lemmas %d\n"
+    (Grammar.size machine) (Grammar.num_productions machine)
+    (pct (Grammar.size human - Grammar.size machine) (Grammar.size human))
+    (List.length lemmas);
+  let ranked =
+    List.map (fun p -> (Grammar.save_value machine p, p)) lemmas
+    |> List.sort (fun (a, p) (b, q) ->
+           match compare b a with 0 -> compare p.Grammar.name q.Grammar.name | c -> c)
   in
-  Printf.printf "Machine grammar: |G| = %d, productions = %d  (reduction %.1f%%, %d new lemmas)\n%!"
-    (Grammar.size machine) (Grammar.num_productions machine) reduction new_lemmas;
-  let data =
-    Json.Obj
-      [ ("commit", Json.Str setmm_commit);
-        ("limit", Json.Int limit);
-        ("vartypes", Json.Obj (List.map (fun (v, tc) -> (v, Json.Str tc)) bk.Backend.vartypes));
-        ("human", grammar_json bk human);
-        ("machine", grammar_json bk machine) ]
-  in
-  sh "mkdir -p visualization/data";
-  let oc = open_out "visualization/data/data.json" in
-  output_string oc (Json.to_string data);
-  close_out oc;
-  Printf.printf "Wrote visualization/data/data.json\n%!"
+  Printf.printf "\nTop new lemmas by save-value (cf. App. B)\n";
+  List.iteri
+    (fun i (sav, p) ->
+      if i < 10 then begin
+        let params =
+          if p.Grammar.arity = 0 then ""
+          else
+            "("
+            ^ String.concat ", "
+                (List.init p.Grammar.arity (fun j -> "V" ^ string_of_int (j + 1)))
+            ^ ")"
+        in
+        Printf.printf "  %s%s -> %s\n      sav=%d  |p|=%d  ref=%d\n" p.Grammar.name params
+          (Term.to_string p.Grammar.rhs) sav (Grammar.production_size p)
+          (Grammar.ref_count machine p.Grammar.name)
+      end)
+    ranked
 
-(* Correctness check: unfolding every inserted lemma in the machine grammar
-   must reproduce each original human proof term exactly (lossless). *)
+(* ---------- verify (lossless) ---------- *)
+
+(* Unfolding every inserted lemma in the machine grammar must reproduce each
+   original human proof term exactly: val_lemmas(rhs_machine(p)) = rhs_human(p). *)
 let run_verify ~limit ~path =
-  let bk = load ~limit ~path in
-  let human = bk.Backend.grammar in
-  let orig = Hashtbl.create 1024 in
-  List.iter (fun p -> Hashtbl.replace orig p.Grammar.name ()) human;
-  let protect n = Hashtbl.mem orig n in
-  let machine = Compress.treerepair ~protect human in
-  (* lemma definitions = machine productions whose name is not original *)
-  let lemmas = Hashtbl.create 1024 in
-  List.iter
-    (fun p -> if not (Hashtbl.mem orig p.Grammar.name) then Hashtbl.replace lemmas p.Grammar.name p)
-    machine;
-  let rec unfold t =
-    match t.Term.node with
-    | Term.Param _ -> t
-    | Term.App (n, args) ->
-      let args = Array.map unfold args in
-      (match Hashtbl.find_opt lemmas n with
-       | Some p -> unfold (Grammar.subst_params p.Grammar.rhs args)
-       | None -> Term.app n args)
-  in
-  let mtbl = Hashtbl.create 4096 in
-  List.iter (fun p -> Hashtbl.replace mtbl p.Grammar.name p) machine;
+  let human = load ~limit ~path in
+  let machine, lemmas = compress human in
+  let mtbl = Grammar.table machine in
   let ok = ref 0 and bad = ref 0 in
   List.iter
     (fun hp ->
       match Hashtbl.find_opt mtbl hp.Grammar.name with
-      | Some mp -> if Term.equal (unfold mp.Grammar.rhs) hp.Grammar.rhs then incr ok else incr bad
-      | None -> incr bad)
+      | Some mp when Term.equal (Grammar.value lemmas mp.Grammar.rhs) hp.Grammar.rhs ->
+        incr ok
+      | _ -> incr bad)
     human;
   Printf.printf
     "verify: %d/%d original proofs reproduced exactly after unfolding %d lemmas (|G| %d -> %d)\n"
-    !ok (!ok + !bad) (Hashtbl.length lemmas) (Grammar.size human) (Grammar.size machine);
+    !ok (!ok + !bad) (List.length lemmas) (Grammar.size human) (Grammar.size machine);
   if !bad > 0 then exit 1
 
+let usage =
+  "mini-math: grammar-compressed Metamath proof structures\n\n\
+   Usage:\n\
+  \  main fetch [url] [path]     download set.mm (default: paper's pinned commit -> data/set.mm)\n\
+  \  main stats [limit] [path]   grammar statistics (Table 2 style) and top new lemmas after TreeRePair\n\
+  \  main verify [limit] [path]  check the compression is lossless (unfold lemmas == original proofs)\n"
+
 let () =
-  match Array.to_list Sys.argv with
-  | _ :: "verify" :: rest ->
-    let limit = match rest with l :: _ -> int_of_string l | [] -> 1000 in
+  let limit_path rest default =
+    let limit = match rest with l :: _ -> int_of_string l | [] -> default in
     let path = match rest with _ :: p :: _ -> p | _ -> default_path in
-    run_verify ~limit ~path
+    (limit, path)
+  in
+  match Array.to_list Sys.argv with
   | _ :: "fetch" :: rest ->
     let url = match rest with u :: _ -> u | [] -> setmm_url in
     let path = match rest with _ :: p :: _ -> p | _ -> default_path in
     fetch url path
-  | _ :: "export" :: rest ->
-    let limit = match rest with l :: _ -> int_of_string l | [] -> 200 in
-    let path = match rest with _ :: p :: _ -> p | _ -> default_path in
-    run_export ~limit ~path
-  | _ ->
-    print_string
-      "mini-math: grammar-compressed Metamath proof structures\n\n\
-       Usage:\n\
-      \  main fetch [url] [path]       download set.mm (default commit pinned)\n\
-      \  main export [limit] [path]    parse a fragment, compress, write \
-       visualization/data/data.json\n\
-      \  main verify [limit] [path]    prove the compression is lossless \
-       (unfold lemmas == original proofs)\n"
+  | _ :: "stats" :: rest ->
+    let limit, path = limit_path rest 1000 in
+    run_stats ~limit ~path
+  | _ :: "verify" :: rest ->
+    let limit, path = limit_path rest 1000 in
+    run_verify ~limit ~path
+  | _ -> print_string usage
